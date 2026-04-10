@@ -28,6 +28,7 @@ import { Glob } from "../util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
 import { Effect, Layer, ServiceMap } from "effect"
+import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
 import { Env } from "../env"
@@ -80,6 +81,7 @@ export namespace ToolRegistry {
     | FileTime.Service
     | Instruction.Service
     | AppFileSystem.Service
+    | HttpClient.HttpClient
   > = Layer.effect(
     Service,
     Effect.gen(function* () {
@@ -92,6 +94,7 @@ export namespace ToolRegistry {
       const read = yield* ReadTool
       const question = yield* QuestionTool
       const todo = yield* TodoWriteTool
+      const websearch = yield* WebSearchTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -159,7 +162,7 @@ export namespace ToolRegistry {
             task: Tool.init(task),
             fetch: Tool.init(WebFetchTool),
             todo: Tool.init(todo),
-            search: Tool.init(WebSearchTool),
+            search: Tool.init(websearch),
             code: Tool.init(CodeSearchTool),
             skill: Tool.init(SkillTool),
             patch: Tool.init(ApplyPatchTool),
@@ -301,6 +304,7 @@ export namespace ToolRegistry {
       Layer.provide(FileTime.defaultLayer),
       Layer.provide(Instruction.defaultLayer),
       Layer.provide(AppFileSystem.defaultLayer),
+      Layer.provide(FetchHttpClient.layer),
     ),
   )
 

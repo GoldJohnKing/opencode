@@ -1,15 +1,10 @@
 import z from "zod"
+import { Effect } from "effect"
+import { HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { Tool } from "./tool"
 import DESCRIPTION from "./websearch.txt"
-import { abortAfterAny } from "../util/abort"
 
-const API_CONFIG = {
-  BASE_URL: "https://mcp.exa.ai",
-  ENDPOINTS: {
-    SEARCH: "/mcp",
-  },
-  DEFAULT_NUM_RESULTS: 8,
-} as const
+const URL = "https://mcp.exa.ai/mcp"
 
 const Parameters = z.object({
   query: z.string().describe("Websearch query"),
@@ -30,121 +25,85 @@ const Parameters = z.object({
     .describe("Maximum characters for context string optimized for LLMs (default: 10000)"),
 })
 
-interface McpSearchRequest {
-  jsonrpc: string
-  id: number
-  method: string
-  params: {
-    name: string
-    arguments: {
-      query: string
-      numResults?: number
-      livecrawl?: "fallback" | "preferred"
-      type?: "auto" | "fast" | "deep"
-      contextMaxCharacters?: number
-    }
-  }
-}
+export const WebSearchTool = Tool.defineEffect(
+  "websearch",
+  Effect.gen(function* () {
+    const http = yield* HttpClient.HttpClient
 
-interface McpSearchResponse {
-  jsonrpc: string
-  result: {
-    content: Array<{
-      type: string
-      text: string
-    }>
-  }
-}
+    return {
+      get description() {
+        return DESCRIPTION.replace("{{year}}", new Date().getFullYear().toString())
+      },
+      parameters: Parameters,
+      execute: (params: z.infer<typeof Parameters>, ctx: Tool.Context) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() =>
+            ctx.ask({
+              permission: "websearch",
+              patterns: [params.query],
+              always: ["*"],
+              metadata: {
+                query: params.query,
+                numResults: params.numResults,
+                livecrawl: params.livecrawl,
+                type: params.type,
+                contextMaxCharacters: params.contextMaxCharacters,
+              },
+            }),
+          )
 
-export const WebSearchTool = Tool.define("websearch", async () => {
-  return {
-    get description() {
-      return DESCRIPTION.replace("{{year}}", new Date().getFullYear().toString())
-    },
-    parameters: Parameters,
-    async execute(params, ctx) {
-      await ctx.ask({
-        permission: "websearch",
-        patterns: [params.query],
-        always: ["*"],
-        metadata: {
-          query: params.query,
-          numResults: params.numResults,
-          livecrawl: params.livecrawl,
-          type: params.type,
-          contextMaxCharacters: params.contextMaxCharacters,
-        },
-      })
+          const request = HttpClientRequest.post(URL).pipe(
+            HttpClientRequest.setHeaders({
+              accept: "application/json, text/event-stream",
+              "content-type": "application/json",
+            }),
+            HttpClientRequest.bodyJsonUnsafe({
+              jsonrpc: "2.0",
+              id: 1,
+              method: "tools/call",
+              params: {
+                name: "web_search_exa",
+                arguments: {
+                  query: params.query,
+                  type: params.type || "auto",
+                  numResults: params.numResults || 8,
+                  livecrawl: params.livecrawl || "fallback",
+                  contextMaxCharacters: params.contextMaxCharacters,
+                },
+              },
+            }),
+          )
 
-      const searchRequest: McpSearchRequest = {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/call",
-        params: {
-          name: "web_search_exa",
-          arguments: {
-            query: params.query,
-            type: params.type || "auto",
-            numResults: params.numResults || API_CONFIG.DEFAULT_NUM_RESULTS,
-            livecrawl: params.livecrawl || "fallback",
-            contextMaxCharacters: params.contextMaxCharacters,
-          },
-        },
-      }
+          const response = yield* http.execute(request).pipe(Effect.timeout("25 seconds"))
 
-      const { signal, clearTimeout } = abortAfterAny(25000, ctx.abort)
+          if (response.status < 200 || response.status >= 300) {
+            const text = yield* response.text
+            throw new Error(`Search error (${response.status}): ${text}`)
+          }
 
-      try {
-        const headers: Record<string, string> = {
-          accept: "application/json, text/event-stream",
-          "content-type": "application/json",
-        }
-
-        const response = await fetch(`${API_CONFIG.BASE_URL}${API_CONFIG.ENDPOINTS.SEARCH}`, {
-          method: "POST",
-          headers,
-          body: JSON.stringify(searchRequest),
-          signal,
-        })
-
-        clearTimeout()
-
-        if (!response.ok) {
-          const errorText = await response.text()
-          throw new Error(`Search error (${response.status}): ${errorText}`)
-        }
-
-        const responseText = await response.text()
-
-        // Parse SSE response
-        const lines = responseText.split("\n")
-        for (const line of lines) {
-          if (line.startsWith("data: ")) {
-            const data: McpSearchResponse = JSON.parse(line.substring(6))
-            if (data.result && data.result.content && data.result.content.length > 0) {
-              return {
-                output: data.result.content[0].text,
-                title: `Web search: ${params.query}`,
-                metadata: {},
+          const body = yield* response.text
+          for (const line of body.split("\n")) {
+            if (line.startsWith("data: ")) {
+              const data = JSON.parse(line.substring(6))
+              if (data.result?.content?.[0]?.text) {
+                return {
+                  output: data.result.content[0].text,
+                  title: `Web search: ${params.query}`,
+                  metadata: {},
+                }
               }
             }
           }
-        }
 
-        return {
-          output: "No search results found. Please try a different query.",
-          title: `Web search: ${params.query}`,
-          metadata: {},
-        }
-      } catch (error) {
-        clearTimeout()
-
-        if (error instanceof Error && error.name === "AbortError") {
-          throw new Error("Search request timed out")
-        }
-
-        throw error
-      }
-    },
-  }
-})
+          return {
+            output: "No search results found. Please try a different query.",
+            title: `Web search: ${params.query}`,
+            metadata: {},
+          }
+        }).pipe(
+          Effect.catchTag("TimeoutError", () => Effect.die(new Error("Search request timed out"))),
+          Effect.runPromise,
+        ),
+    }
+  }),
+)
