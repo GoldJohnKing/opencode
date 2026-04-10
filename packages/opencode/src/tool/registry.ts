@@ -1,4 +1,5 @@
 import { PlanExitTool } from "./plan"
+import { Session } from "../session"
 import { QuestionTool } from "./question"
 import { BashTool } from "./bash"
 import { EditTool } from "./edit"
@@ -76,6 +77,7 @@ export namespace ToolRegistry {
     | Todo.Service
     | Agent.Service
     | Skill.Service
+    | Session.Service
     | LSP.Service
     | FileTime.Service
     | Instruction.Service
@@ -92,6 +94,7 @@ export namespace ToolRegistry {
       const read = yield* ReadTool
       const question = yield* QuestionTool
       const todo = yield* TodoWriteTool
+      const plan = yield* PlanExitTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -165,7 +168,7 @@ export namespace ToolRegistry {
             patch: Tool.init(ApplyPatchTool),
             question: Tool.init(question),
             lsp: Tool.init(LspTool),
-            plan: Tool.init(PlanExitTool),
+            plan: Tool.init(plan),
           })
 
           return {
@@ -297,6 +300,7 @@ export namespace ToolRegistry {
       Layer.provide(Todo.defaultLayer),
       Layer.provide(Skill.defaultLayer),
       Layer.provide(Agent.defaultLayer),
+      Layer.provide(Session.defaultLayer),
       Layer.provide(LSP.defaultLayer),
       Layer.provide(FileTime.defaultLayer),
       Layer.provide(Instruction.defaultLayer),
